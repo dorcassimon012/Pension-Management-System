@@ -277,3 +277,74 @@
     (>= current-age RETIREMENT_AGE)
   )
 )
+
+(define-constant ERR_NOT_BENEFICIARY (err u108))
+(define-constant ERR_BENEFICIARY_EXISTS (err u109))
+
+(define-map pension-beneficiaries
+  principal
+  {
+    beneficiary: principal,
+    inheritance-percentage: uint,
+    set-at: uint,
+    active: bool
+  }
+)
+
+(define-public (set-beneficiary (beneficiary principal) (percentage uint))
+  (let ((caller tx-sender))
+    (asserts! (is-some (map-get? pension-accounts caller)) ERR_ACCOUNT_NOT_FOUND)
+    (asserts! (and (> percentage u0) (<= percentage u100)) ERR_INVALID_AMOUNT)
+    (asserts! (not (is-eq caller beneficiary)) ERR_UNAUTHORIZED)
+    (map-set pension-beneficiaries caller {
+      beneficiary: beneficiary,
+      inheritance-percentage: percentage,
+      set-at: stacks-block-height,
+      active: true
+    })
+    (ok true)
+  )
+)
+
+(define-public (remove-beneficiary)
+  (let ((caller tx-sender))
+    (asserts! (is-some (map-get? pension-beneficiaries caller)) ERR_ACCOUNT_NOT_FOUND)
+    (map-delete pension-beneficiaries caller)
+    (ok true)
+  )
+)
+
+(define-public (beneficiary-emergency-withdraw (account-holder principal))
+  (let (
+    (caller tx-sender)
+    (beneficiary-info (unwrap! (map-get? pension-beneficiaries account-holder) ERR_NOT_BENEFICIARY))
+    (account (unwrap! (map-get? pension-accounts account-holder) ERR_ACCOUNT_NOT_FOUND))
+    (withdrawal-amount (/ (* (get balance account) (get inheritance-percentage beneficiary-info)) u100))
+  )
+    (asserts! (is-eq caller (get beneficiary beneficiary-info)) ERR_NOT_BENEFICIARY)
+    (asserts! (get active beneficiary-info) ERR_NOT_BENEFICIARY)
+    (asserts! (> withdrawal-amount u0) ERR_INSUFFICIENT_BALANCE)
+    (try! (as-contract (stx-transfer? withdrawal-amount tx-sender caller)))
+    (map-set pension-accounts account-holder (merge account {
+      balance: (- (get balance account) withdrawal-amount)
+    }))
+    (map-set pension-beneficiaries account-holder (merge beneficiary-info {
+      active: false
+    }))
+    (ok withdrawal-amount)
+  )
+)
+
+(define-read-only (get-beneficiary-info (account-holder principal))
+  (map-get? pension-beneficiaries account-holder)
+)
+
+(define-read-only (is-beneficiary-of (account-holder principal) (potential-beneficiary principal))
+  (match (map-get? pension-beneficiaries account-holder)
+    beneficiary-info (and 
+      (is-eq (get beneficiary beneficiary-info) potential-beneficiary)
+      (get active beneficiary-info)
+    )
+    false
+  )
+)
