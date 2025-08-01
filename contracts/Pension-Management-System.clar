@@ -8,6 +8,11 @@
 (define-constant ERR_INVALID_AGE (err u106))
 (define-constant ERR_STAKING_PERIOD_NOT_MET (err u107))
 
+(define-constant ERR_EMPLOYER_NOT_FOUND (err u110))
+(define-constant ERR_EMPLOYER_EXISTS (err u111))
+(define-constant ERR_INVALID_MATCH_RATE (err u112))
+(define-constant ERR_EMPLOYEE_NOT_ENROLLED (err u113))
+
 (define-constant RETIREMENT_AGE u65)
 (define-constant MIN_STAKING_PERIOD u52560)
 (define-constant STAKING_REWARD_RATE u5)
@@ -346,5 +351,133 @@
       (get active beneficiary-info)
     )
     false
+  )
+)
+
+(define-map employer-sponsors
+  principal
+  {
+    match-percentage: uint,
+    max-match-amount: uint,
+    total-matched: uint,
+    employees-enrolled: uint,
+    active: bool,
+    registered-at: uint
+  }
+)
+
+(define-map employee-employer
+  principal
+  {
+    employer: principal,
+    enrolled-at: uint,
+    total-employer-match: uint,
+    current-year-match: uint,
+    last-match-reset: uint
+  }
+)
+
+(define-public (register-employer (match-percentage uint) (max-annual-match uint))
+  (let ((caller tx-sender))
+    (asserts! (is-none (map-get? employer-sponsors caller)) ERR_EMPLOYER_EXISTS)
+    (asserts! (and (> match-percentage u0) (<= match-percentage u100)) ERR_INVALID_MATCH_RATE)
+    (asserts! (> max-annual-match u0) ERR_INVALID_AMOUNT)
+    (map-set employer-sponsors caller {
+      match-percentage: match-percentage,
+      max-match-amount: max-annual-match,
+      total-matched: u0,
+      employees-enrolled: u0,
+      active: true,
+      registered-at: stacks-block-height
+    })
+    (ok true)
+  )
+)
+
+(define-public (enroll-employee (employer principal))
+  (let (
+    (caller tx-sender)
+    (sponsor (unwrap! (map-get? employer-sponsors employer) ERR_EMPLOYER_NOT_FOUND))
+  )
+    (asserts! (is-some (map-get? pension-accounts caller)) ERR_ACCOUNT_NOT_FOUND)
+    (asserts! (get active sponsor) ERR_EMPLOYER_NOT_FOUND)
+    (asserts! (is-none (map-get? employee-employer caller)) ERR_UNAUTHORIZED)
+    (map-set employee-employer caller {
+      employer: employer,
+      enrolled-at: stacks-block-height,
+      total-employer-match: u0,
+      current-year-match: u0,
+      last-match-reset: stacks-block-height
+    })
+    (map-set employer-sponsors employer (merge sponsor {
+      employees-enrolled: (+ (get employees-enrolled sponsor) u1)
+    }))
+    (ok true)
+  )
+)
+
+(define-public (contribute-with-match (amount uint))
+  (let (
+    (caller tx-sender)
+    (employee-info (map-get? employee-employer caller))
+  )
+    (try! (contribute amount))
+    (match employee-info
+      emp-data (process-employer-match caller amount emp-data)
+      (ok amount)
+    )
+  )
+)
+
+(define-private (process-employer-match (employee principal) (contribution uint) (emp-data {employer: principal, enrolled-at: uint, total-employer-match: uint, current-year-match: uint, last-match-reset: uint}))
+  (let (
+    (employer (get employer emp-data))
+    (sponsor (unwrap! (map-get? employer-sponsors employer) ERR_EMPLOYER_NOT_FOUND))
+    (calculated-match (/ (* contribution (get match-percentage sponsor)) u100))
+    (remaining-match (- (get max-match-amount sponsor) (get current-year-match emp-data)))
+    (match-amount (if (<= calculated-match remaining-match) calculated-match remaining-match))
+    (account (unwrap! (map-get? pension-accounts employee) ERR_ACCOUNT_NOT_FOUND))
+  )
+    (if (and (> match-amount u0) (get active sponsor))
+      (begin
+        (try! (stx-transfer? match-amount employer (as-contract tx-sender)))
+        (map-set pension-accounts employee (merge account {
+          balance: (+ (get balance account) match-amount),
+          total-contributions: (+ (get total-contributions account) match-amount)
+        }))
+        (map-set employee-employer employee (merge emp-data {
+          total-employer-match: (+ (get total-employer-match emp-data) match-amount),
+          current-year-match: (+ (get current-year-match emp-data) match-amount)
+        }))
+        (map-set employer-sponsors employer (merge sponsor {
+          total-matched: (+ (get total-matched sponsor) match-amount)
+        }))
+        (ok (+ contribution match-amount))
+      )
+      (ok contribution)
+    )
+  )
+)
+
+(define-read-only (get-employer-info (employer principal))
+  (map-get? employer-sponsors employer)
+)
+
+(define-read-only (get-employee-enrollment (employee principal))
+  (map-get? employee-employer employee)
+)
+
+(define-read-only (calculate-potential-match (employee principal) (contribution uint))
+  (match (map-get? employee-employer employee)
+    emp-data (match (map-get? employer-sponsors (get employer emp-data))
+      sponsor (let (
+        (calculated-match (/ (* contribution (get match-percentage sponsor)) u100))
+        (remaining-match (- (get max-match-amount sponsor) (get current-year-match emp-data)))
+      )
+        (if (<= calculated-match remaining-match) calculated-match remaining-match)
+      )
+      u0
+    )
+    u0
   )
 )
