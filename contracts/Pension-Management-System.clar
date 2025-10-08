@@ -17,6 +17,11 @@
 (define-constant MIN_STAKING_PERIOD u52560)
 (define-constant STAKING_REWARD_RATE u5)
 
+(define-constant ERR_SCHEDULE_EXISTS (err u114))
+(define-constant ERR_SCHEDULE_NOT_FOUND (err u115))
+(define-constant ERR_SCHEDULE_NOT_DUE (err u116))
+(define-constant ERR_INVALID_FREQUENCY (err u117))
+
 (define-data-var total-staked uint u0)
 (define-data-var total-accounts uint u0)
 
@@ -479,5 +484,77 @@
       u0
     )
     u0
+  )
+)
+
+(define-map contribution-schedules
+  principal
+  {
+    amount: uint,
+    frequency-blocks: uint,
+    next-contribution-block: uint,
+    total-scheduled-contributions: uint,
+    active: bool,
+    created-at: uint
+  }
+)
+
+(define-public (schedule-recurring-contribution (amount uint) (frequency-blocks uint))
+  (let ((caller tx-sender))
+    (asserts! (is-some (map-get? pension-accounts caller)) ERR_ACCOUNT_NOT_FOUND)
+    (asserts! (is-none (map-get? contribution-schedules caller)) ERR_SCHEDULE_EXISTS)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= frequency-blocks u144) ERR_INVALID_FREQUENCY)
+    (map-set contribution-schedules caller {
+      amount: amount,
+      frequency-blocks: frequency-blocks,
+      next-contribution-block: (+ stacks-block-height frequency-blocks),
+      total-scheduled-contributions: u0,
+      active: true,
+      created-at: stacks-block-height
+    })
+    (ok true)
+  )
+)
+
+(define-public (execute-scheduled-contribution)
+  (let (
+    (caller tx-sender)
+    (schedule (unwrap! (map-get? contribution-schedules caller) ERR_SCHEDULE_NOT_FOUND))
+  )
+    (asserts! (get active schedule) ERR_SCHEDULE_NOT_FOUND)
+    (asserts! (>= stacks-block-height (get next-contribution-block schedule)) ERR_SCHEDULE_NOT_DUE)
+    (try! (contribute (get amount schedule)))
+    (map-set contribution-schedules caller (merge schedule {
+      next-contribution-block: (+ stacks-block-height (get frequency-blocks schedule)),
+      total-scheduled-contributions: (+ (get total-scheduled-contributions schedule) u1)
+    }))
+    (ok (get amount schedule))
+  )
+)
+
+(define-public (cancel-contribution-schedule)
+  (let (
+    (caller tx-sender)
+    (schedule (unwrap! (map-get? contribution-schedules caller) ERR_SCHEDULE_NOT_FOUND))
+  )
+    (map-set contribution-schedules caller (merge schedule {
+      active: false
+    }))
+    (ok true)
+  )
+)
+
+(define-read-only (get-contribution-schedule (user principal))
+  (map-get? contribution-schedules user)
+)
+
+(define-read-only (is-contribution-due (user principal))
+  (match (map-get? contribution-schedules user)
+    schedule (and 
+      (get active schedule)
+      (>= stacks-block-height (get next-contribution-block schedule))
+    )
+    false
   )
 )
