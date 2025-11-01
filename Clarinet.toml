@@ -13,6 +13,10 @@ epoch = 3.1
 path = 'contracts/contribution-goals.clar'
 clarity_version = 3
 epoch = 3.1
+[contracts.pension-health-monitor]
+path = 'contracts/pension-health-monitor.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
